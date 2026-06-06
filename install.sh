@@ -124,10 +124,13 @@ success "Services configured for $DEVICE_IP"
 # ── Step 4: Build & Start ────────────────────────────────
 step "Step 4/4: Building & Starting Services"
 
-# Ensure network exists
+# Ensure network exists - but only create if main stack already created it
 NETWORK="sms-iot_default"
-if ! docker network ls --format '{{.Name}}' | grep -q "^${NETWORK}$"; then
-    info "Creating Docker network $NETWORK..."
+if ! docker network ls --format "{{.Name}}" | grep -q "^${NETWORK}$"; then
+    warn "Main stack network not found — start main stack first"
+    warn "Run: curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-iot-deploy/main/deploy.sh -o /tmp/deploy.sh && sudo bash /tmp/deploy.sh"
+    read -r -p "  Continue anyway? [y/n]: " NET_CONFIRM
+    [[ "$NET_CONFIRM" != "y" ]] && exit 1
     docker network create $NETWORK 2>/dev/null || true
 fi
 
