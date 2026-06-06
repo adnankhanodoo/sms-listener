@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Push-to-Talk</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      gap: 1.5rem;
+    }
+
+    h1 { font-size: 1.4rem; letter-spacing: 0.05em; color: #94a3b8; }
+
+    #status {
+      font-size: 0.9rem;
+      color: #64748b;
+      min-height: 1.2rem;
+    }
+
+    #ptt-btn {
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      border: 4px solid #334155;
+      background: #1e293b;
+      color: #94a3b8;
+      font-size: 0.85rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+
+    #ptt-btn:hover { border-color: #475569; }
+
+    #ptt-btn.active {
+      background: #dc2626;
+      border-color: #ef4444;
+      color: #fff;
+      transform: scale(1.06);
+      box-shadow: 0 0 28px rgba(220,38,38,0.5);
+    }
+
+    #info-box {
+      font-size: 0.78rem;
+      color: #475569;
+      text-align: center;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎙 PUSH-TO-TALK</h1>
+  <p id="status">Connecting…</p>
+
+  <button id="ptt-btn" disabled>HOLD TO<br>TALK</button>
+
+  <div id="info-box" id="info"></div>
+
+  <script>
+    const btn    = document.getElementById("ptt-btn");
+    const status = document.getElementById("status");
+    const info   = document.getElementById("info-box");
+
+    const WS_URL = `wss://${location.host}/ws`;
+
+    let ws, mediaStream, audioCtx, processor, source;
+    let talking = false;
+
+    // ── WebSocket ──────────────────────────────────────────
+    function connect() {
+      ws = new WebSocket(WS_URL);
+      ws.binaryType = "arraybuffer";
+
+      ws.onopen = () => {
+        status.textContent = "Connected — hold button to talk";
+        btn.disabled = false;
+        fetchInfo();
+      };
+
+      ws.onclose = () => {
+        status.textContent = "Disconnected — reconnecting…";
+        btn.disabled = true;
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        status.textContent = "WebSocket error";
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "error") {
+            status.textContent = "⚠ " + msg.message;
+          } else if (msg.type === "ptt_started") {
+            status.textContent = "🔴 Transmitting…";
+          } else if (msg.type === "ptt_stopped") {
+            status.textContent = "Connected — hold button to talk";
+          }
+        } catch (_) {}
+      };
+    }
+
+    // ── PTT start ──────────────────────────────────────────
+    async function startTalk() {
+      if (talking || ws.readyState !== WebSocket.OPEN) return;
+      talking = true;
+      btn.classList.add("active");
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioCtx    = new AudioContext({ sampleRate: 48000 });
+        source      = audioCtx.createMediaStreamSource(mediaStream);
+
+        // ScriptProcessor for raw PCM (wide browser support)
+        processor   = audioCtx.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = (e) => {
+          if (!talking) return;
+          const f32 = e.inputBuffer.getChannelData(0);
+          const i16 = new Int16Array(f32.length);
+          for (let i = 0; i < f32.length; i++) {
+            i16[i] = Math.max(-32768, Math.min(32767, f32[i] * 32767));
+          }
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(i16.buffer);
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioCtx.destination);
+
+        ws.send(JSON.stringify({ type: "ptt_start" }));
+      } catch (err) {
+        status.textContent = "Mic error: " + err.message;
+        stopTalk();
+      }
+    }
+
+    // ── PTT stop ───────────────────────────────────────────
+    function stopTalk() {
+      if (!talking) return;
+      talking = false;
+      btn.classList.remove("active");
+
+      try { processor?.disconnect(); } catch (_) {}
+      try { source?.disconnect(); } catch (_) {}
+      try { audioCtx?.close(); } catch (_) {}
+      try { mediaStream?.getTracks().forEach(t => t.stop()); } catch (_) {}
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ptt_stop" }));
+      }
+    }
+
+    // ── Button events (mouse + touch) ──────────────────────
+    btn.addEventListener("mousedown",  startTalk);
+    btn.addEventListener("mouseup",    stopTalk);
+    btn.addEventListener("mouseleave", stopTalk);
+    btn.addEventListener("touchstart", (e) => { e.preventDefault(); startTalk(); });
+    btn.addEventListener("touchend",   (e) => { e.preventDefault(); stopTalk();  });
+
+    // ── Info ───────────────────────────────────────────────
+    async function fetchInfo() {
+      try {
+        const r = await fetch("/info");
+        const d = await r.json();
+        info.textContent =
+          `Host: ${d.hostname}  |  Platform: ${d.platform}  |  Sessions: ${d.activeSessions}`;
+      } catch (_) {}
+    }
+
+    connect();
+  </script>
+</body>
+</html>

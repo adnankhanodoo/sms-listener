@@ -1,0 +1,96 @@
+# SMS IoT Listener Services
+# Connects to existing sms-iot_default Docker network
+# Run AFTER main sms-iot-deploy stack is running
+
+networks:
+  sms-iot_default:
+    external: true
+
+volumes:
+  downloaded-clips:
+
+services:
+
+  # ─────────────────────────────
+  # PTZ Control Service (HTTPS :5002)
+  # GET /<camera>/ptz/<direction>
+  # ─────────────────────────────
+  ptz-service:
+    build: ./listener/ptz-service
+    container_name: ptz-service
+    restart: unless-stopped
+    networks:
+      - sms-iot_default
+    ports:
+      - "5002:5002"
+    volumes:
+      - ./ssl-certs:/certs:ro
+    environment:
+      FRIGATE_MQTT_HOST: mosquitto
+      FRIGATE_MQTT_PORT: "1883"
+      FRIGATE_TOPIC: "frigate-165/"
+      SSL_CERTFILE: /certs/fullchain.pem
+      SSL_KEYFILE: /certs/privkey.pem
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    healthcheck:
+      test: ["CMD", "curl", "-ksf", "https://localhost:5002/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────
+  # Clip Uploader/Downloader (HTTP :5001)
+  # POST /download_clip {"event_id":"..."}
+  # ─────────────────────────────
+  uploader-service:
+    build: ./listener/uploader-service
+    container_name: uploader-service
+    restart: unless-stopped
+    networks:
+      - sms-iot_default
+    ports:
+      - "5001:5001"
+    volumes:
+      - downloaded-clips:/downloads
+    environment:
+      FRIGATE_HOST: "frigate:5000"
+      DOWNLOAD_DIR: /downloads
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────
+  # PTT Server - Push to Talk (HTTPS/WSS :3000)
+  # Browser mic → WebSocket → ffplay → speaker
+  # ─────────────────────────────
+  ptt-server:
+    build: ./listener/ptt-server
+    container_name: ptt-server
+    restart: unless-stopped
+    networks:
+      - sms-iot_default
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./ssl-certs:/certs:ro
+    environment:
+      PTT_PORT: "3000"
+      SSL_CERTFILE: /certs/fullchain.pem
+      SSL_KEYFILE: /certs/privkey.pem
+    devices:
+      - /dev/snd:/dev/snd
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    healthcheck:
+      test: ["CMD", "curl", "-ksf", "https://localhost:3000/info"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
