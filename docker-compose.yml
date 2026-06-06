@@ -5,6 +5,7 @@
 networks:
   sms-iot_default:
     external: true
+    name: sms-iot_default
 
 volumes:
   downloaded-clips:
