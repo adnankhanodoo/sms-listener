@@ -39,7 +39,7 @@ echo -e "  ${BOLD}Install dir:${NC} $INSTALL_DIR"
 echo ""
 
 # Check main stack is running
-if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q smarthome-manager; then
+if ! sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q smarthome-manager; then
     warn "Main SMS IoT stack not detected!"
     warn "Please install it first: bash <(curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-iot-deploy/main/deploy.sh)"
     echo ""
@@ -142,9 +142,9 @@ step "Step 4/4: Building & Starting Services"
 
 # Check Docker network exists
 NETWORK="sms-iot_default"
-if ! docker network ls --format '{{.Name}}' | grep -q "^${NETWORK}$"; then
+if ! sudo docker network ls --format '{{.Name}}' | grep -q "^${NETWORK}$"; then
     warn "Network $NETWORK not found — creating it..."
-    docker network create $NETWORK 2>/dev/null || true
+    sudo docker network create $NETWORK 2>/dev/null || true
 fi
 
 # Build selected services
@@ -156,12 +156,12 @@ SERVICES=""
 info "Building Docker images (first time takes 2-5 min)..."
 for svc in $SERVICES; do
     echo -e "  ${CYAN}── Building: $svc ──${NC}"
-    docker compose build $svc
+    sudo docker compose build $svc
     echo ""
 done
 
 info "Starting services..."
-docker compose up -d $SERVICES 2>&1 | grep -v "^$"
+sudo docker compose up -d $SERVICES 2>&1 | grep -v "^$"
 success "Services started"
 
 # Wait for health
