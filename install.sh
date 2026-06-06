@@ -1,9 +1,17 @@
 #!/bin/bash
 # ================================================================
-# SMS IoT Listener Services — Installer
-# Installs: PTZ Service, Clip Uploader, PTT Server
-# Requires: sms-iot-deploy main stack already running
+# SMS IoT Listener Services — Installer v1.1
 # ================================================================
+
+# Auto re-run with sudo if docker not accessible
+if ! docker info >/dev/null 2>&1; then
+    if [ "$EUID" -ne 0 ]; then
+        echo "  Requesting sudo for Docker access..."
+        exec sudo -H bash "$0" "$@"
+    fi
+fi
+
+cd $HOME
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -26,22 +34,21 @@ echo -e "${NC}"
 DEVICE_IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+' | head -1)
 [ -z "$DEVICE_IP" ] && DEVICE_IP=$(hostname -I | awk '{print $1}')
 
-INSTALL_DIR="${HOME}/sms-listener"
-MAIN_DIR="${HOME}/sms-iot"
+# Use home of the real user (not root)
+REAL_USER="${SUDO_USER:-$USER}"
+REAL_HOME=$(getent passwd "$REAL_USER" | cut -d: -f6)
+INSTALL_DIR="${REAL_HOME}/sms-listener"
+MAIN_DIR="${REAL_HOME}/sms-iot"
 REPO_URL="https://github.com/adnankhanodoo/sms-listener.git"
-
-# Fix docker socket permissions
-sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
-[[ $EUID -ne 0 ]] && SUDO="sudo" || SUDO=""
 
 echo -e "  ${BOLD}Device IP:${NC}   ${GREEN}$DEVICE_IP${NC}"
 echo -e "  ${BOLD}Install dir:${NC} $INSTALL_DIR"
 echo ""
 
-# Check main stack is running
-if ! sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q smarthome-manager; then
+# Check main stack
+if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q smarthome-manager; then
     warn "Main SMS IoT stack not detected!"
-    warn "Please install it first: bash <(curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-iot-deploy/main/deploy.sh)"
+    warn "Install it first: curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-iot-deploy/main/deploy.sh -o /tmp/deploy.sh && sudo bash /tmp/deploy.sh"
     echo ""
     read -r -p "  Continue anyway? [y/n]: " FORCE
     [[ "$FORCE" != "y" ]] && exit 0
@@ -51,7 +58,7 @@ fi
 echo -e "  ${BOLD}Which services to install?${NC}"
 echo ""
 echo -e "  ${CYAN}1)${NC} All 3 services  (PTZ + Uploader + PTT)"
-echo -e "  ${CYAN}2)${NC} PTZ Service only  (camera pan/tilt/zoom control)"
+echo -e "  ${CYAN}2)${NC} PTZ Service only  (camera pan/tilt/zoom)"
 echo -e "  ${CYAN}3)${NC} Uploader only  (Frigate clip downloader)"
 echo -e "  ${CYAN}4)${NC} PTT Server only  (push-to-talk audio)"
 echo -e "  ${CYAN}5)${NC} Update existing installation"
@@ -69,14 +76,14 @@ case $CHOICE in
 esac
 
 echo -e "  ${BOLD}Summary:${NC}"
-[ "$INSTALL_PTZ" = "y" ]      && echo -e "    ${GREEN}✓${NC} PTZ Service     → https://$DEVICE_IP:5002"
-[ "$INSTALL_UPLOADER" = "y" ] && echo -e "    ${GREEN}✓${NC} Uploader        → http://$DEVICE_IP:5001"
-[ "$INSTALL_PTT" = "y" ]      && echo -e "    ${GREEN}✓${NC} PTT Server      → https://$DEVICE_IP:3000"
+[ "$INSTALL_PTZ" = "y" ]      && echo -e "    ${GREEN}✓${NC} PTZ Service  → https://$DEVICE_IP:5002"
+[ "$INSTALL_UPLOADER" = "y" ] && echo -e "    ${GREEN}✓${NC} Uploader     → http://$DEVICE_IP:5001"
+[ "$INSTALL_PTT" = "y" ]      && echo -e "    ${GREEN}✓${NC} PTT Server   → https://$DEVICE_IP:3000"
 echo ""
 read -r -p "  Proceed? [y/n]: " CONFIRM
 [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]] && echo "  Cancelled." && exit 0
 
-# ── Step 1: Clone/Update ─────────────────────────────────────
+# ── Step 1: Clone/Update ─────────────────────────────────
 step "Step 1/4: Setting Up Files"
 
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -87,13 +94,13 @@ if [ -d "$INSTALL_DIR/.git" ]; then
 else
     info "Downloading from GitHub..."
     git clone $REPO_URL $INSTALL_DIR
+    chown -R $REAL_USER:$REAL_USER $INSTALL_DIR 2>/dev/null || true
     success "Files downloaded to $INSTALL_DIR"
 fi
 cd $INSTALL_DIR
 
-# ── Step 2: SSL Certs ────────────────────────────────────────
+# ── Step 2: SSL Certs ────────────────────────────────────
 step "Step 2/4: Setting Up SSL Certificates"
-
 mkdir -p ssl-certs
 
 if [ -f "$MAIN_DIR/ssl/frigate.crt" ]; then
@@ -101,7 +108,7 @@ if [ -f "$MAIN_DIR/ssl/frigate.crt" ]; then
     cp $MAIN_DIR/ssl/frigate.key ssl-certs/privkey.pem
     success "SSL certs copied from main installation"
 elif [ ! -f ssl-certs/fullchain.pem ]; then
-    info "Generating new SSL certificate..."
+    info "Generating SSL certificate..."
     openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
         -keyout ssl-certs/privkey.pem -out ssl-certs/fullchain.pem \
         -subj "/CN=$DEVICE_IP" 2>/dev/null
@@ -110,44 +117,21 @@ else
     success "SSL certificates already exist"
 fi
 
-# ── Step 3: Configure ────────────────────────────────────────
+# ── Step 3: Configure ────────────────────────────────────
 step "Step 3/4: Configuring Services"
+success "Services configured for $DEVICE_IP"
 
-# Update MQTT topic from main frigate config
-FRIGATE_TOPIC="frigate-165/"
-if [ -f "$MAIN_DIR/frigate/config/config.yml" ]; then
-    TOPIC=$(grep "topic_prefix\|client_id" $MAIN_DIR/frigate/config/config.yml 2>/dev/null | head -1 | awk '{print $2}')
-    [ -n "$TOPIC" ] && FRIGATE_TOPIC="${TOPIC}/"
-fi
-
-# Generate filtered docker-compose based on choices
-python3 << PYEOF
-import yaml, os
-
-with open("docker-compose.yml") as f:
-    content = f.read()
-
-# Update MQTT topic
-content = content.replace('FRIGATE_TOPIC: "frigate-165/"', f'FRIGATE_TOPIC: "$FRIGATE_TOPIC"')
-
-with open("docker-compose.yml", "w") as f:
-    f.write(content)
-print(f"  Configured with MQTT topic: $FRIGATE_TOPIC")
-PYEOF
-
-success "Services configured"
-
-# ── Step 4: Build & Start ────────────────────────────────────
+# ── Step 4: Build & Start ────────────────────────────────
 step "Step 4/4: Building & Starting Services"
 
-# Check Docker network exists
+# Ensure network exists
 NETWORK="sms-iot_default"
-if ! sudo docker network ls --format '{{.Name}}' | grep -q "^${NETWORK}$"; then
-    warn "Network $NETWORK not found — creating it..."
-    sudo docker network create $NETWORK 2>/dev/null || true
+if ! docker network ls --format '{{.Name}}' | grep -q "^${NETWORK}$"; then
+    info "Creating Docker network $NETWORK..."
+    docker network create $NETWORK 2>/dev/null || true
 fi
 
-# Build selected services
+# Build services
 SERVICES=""
 [ "$INSTALL_PTZ" = "y" ]      && SERVICES="$SERVICES ptz-service"
 [ "$INSTALL_UPLOADER" = "y" ] && SERVICES="$SERVICES uploader-service"
@@ -156,19 +140,17 @@ SERVICES=""
 info "Building Docker images (first time takes 2-5 min)..."
 for svc in $SERVICES; do
     echo -e "  ${CYAN}── Building: $svc ──${NC}"
-    sudo docker compose build $svc
+    cd $INSTALL_DIR && docker compose build $svc
     echo ""
 done
 
 info "Starting services..."
-sudo docker compose up -d $SERVICES 2>&1 | grep -v "^$"
-success "Services started"
+cd $INSTALL_DIR && docker compose up -d $SERVICES 2>&1 | grep -v "^$"
+success "All services started"
 
-# Wait for health
-info "Waiting for services to be healthy..."
 sleep 5
 
-# ── Summary ──────────────────────────────────────────────────
+# ── Summary ──────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}"
 echo "  ╔═══════════════════════════════════════════════════╗"
@@ -178,30 +160,10 @@ echo -e "${NC}"
 echo -e "  ${BOLD}Service URLs:${NC}"
 echo ""
 
-if [ "$INSTALL_PTZ" = "y" ]; then
-echo -e "  ${CYAN}PTZ Service${NC}"
-echo -e "    🎥  https://$DEVICE_IP:5002/<camera>/ptz/MOVE_RIGHT"
-echo -e "    🎥  https://$DEVICE_IP:5002/<camera>/ptz/MOVE_LEFT"
-echo -e "    🎥  https://$DEVICE_IP:5002/<camera>/ptz/STOP"
-echo -e "    ❤️  https://$DEVICE_IP:5002/health"
+[ "$INSTALL_PTZ" = "y" ] && echo -e "  ${CYAN}PTZ${NC}      🎥  https://$DEVICE_IP:5002/<cam>/ptz/MOVE_RIGHT"
+[ "$INSTALL_UPLOADER" = "y" ] && echo -e "  ${CYAN}Uploader${NC} 📥  http://$DEVICE_IP:5001/download_clip"
+[ "$INSTALL_PTT" = "y" ] && echo -e "  ${CYAN}PTT${NC}      🎙️  https://$DEVICE_IP:3000"
 echo ""
-fi
-
-if [ "$INSTALL_UPLOADER" = "y" ]; then
-echo -e "  ${CYAN}Clip Uploader${NC}"
-echo -e "    📥  http://$DEVICE_IP:5001/download_clip"
-echo -e "    ❤️  http://$DEVICE_IP:5001/health"
-echo ""
-fi
-
-if [ "$INSTALL_PTT" = "y" ]; then
-echo -e "  ${CYAN}PTT Server (Push-to-Talk)${NC}"
-echo -e "    🎙️  https://$DEVICE_IP:3000"
-echo -e "    🔌  wss://$DEVICE_IP:3000/ws"
-echo -e "    ℹ️  https://$DEVICE_IP:3000/info"
-echo ""
-fi
-
-echo -e "  ${BOLD}Run again anytime:${NC}"
-echo -e "    curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-listener/main/install.sh | bash"
+echo -e "  ${BOLD}Run again:${NC}"
+echo -e "    curl -fsSL https://raw.githubusercontent.com/adnankhanodoo/sms-listener/main/install.sh -o /tmp/sl.sh && sudo bash /tmp/sl.sh"
 echo ""
