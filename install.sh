@@ -29,6 +29,9 @@ DEVICE_IP=$(ip route get 8.8.8.8 2>/dev/null | grep -oP 'src \K\S+' | head -1)
 INSTALL_DIR="${HOME}/sms-listener"
 MAIN_DIR="${HOME}/sms-iot"
 REPO_URL="https://github.com/adnankhanodoo/sms-listener.git"
+
+# Fix docker socket permissions
+sudo chmod 666 /var/run/docker.sock 2>/dev/null || true
 [[ $EUID -ne 0 ]] && SUDO="sudo" || SUDO=""
 
 echo -e "  ${BOLD}Device IP:${NC}   ${GREEN}$DEVICE_IP${NC}"
